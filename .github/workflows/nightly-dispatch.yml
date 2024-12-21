@@ -1,0 +1,46 @@
+name: Nightly CI Dispatcher
+
+on:
+  #push:
+  #  branches:
+  #    - develop
+  schedule:
+    - cron: "0 0 * * *"
+
+jobs:
+  nightly-ci-matrix:
+    name: Nightly CI
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        branch:
+          - develop
+        repo: [mayastor, mayastor-control-plane, mayastor-extensions]
+      fail-fast: false
+    steps:
+      - name: Awaiting
+        id: dispatch
+        uses: the-actions-org/workflow-dispatch@v4
+        with:
+          token: ${{ secrets.ORG_CI_GITHUB }}
+          repo: openebs/${{ matrix.repo }}
+          ref: ${{ matrix.branch }}
+          workflow: nightly-ci.yml
+          wait-for-completion: true
+          wait-for-completion-timeout: 4h
+          display-workflow-run-url-timeout: 1h
+      - name: Print Status
+        if: always()
+        run: |
+          echo "Workflow for repo ${{ matrix.repo }} and branch ${{ matrix.branch }} completed with status: ${{ steps.dispatch.outputs.workflow-conclusion }}"
+          echo "For more details, see ${{ steps.dispatch.outputs.workflow-url }}"
+  nightly-ci:
+    name: Collect All Runs
+    needs: nightly-ci-matrix
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Workflow Complete
+        if: always()
+        run: echo "All matrix jobs have completed!"
+
