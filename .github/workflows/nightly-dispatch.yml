@@ -15,6 +15,7 @@ jobs:
       matrix:
         branch:
           - develop
+          - release/2.8
         repo: [mayastor, mayastor-control-plane, mayastor-extensions]
       fail-fast: false
     steps:
