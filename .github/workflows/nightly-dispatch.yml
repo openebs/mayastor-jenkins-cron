@@ -6,6 +6,9 @@ on:
   #    - develop
   schedule:
     - cron: "0 0 * * *"
+  push:
+    branches:
+      - test-runs
 
 jobs:
   nightly-ci-matrix:
@@ -15,26 +18,70 @@ jobs:
       matrix:
         branch:
           - develop
-          - release/2.9
-        repo: [mayastor, mayastor-control-plane, mayastor-extensions]
+          #- release/2.9
+        repo: [mayastor-control-plane]
+        #repo: [mayastor, mayastor-control-plane, mayastor-extensions]
       fail-fast: false
     steps:
-      - name: Awaiting
-        id: dispatch
-        uses: the-actions-org/workflow-dispatch@v4
-        with:
-          token: ${{ secrets.ORG_CI_GITHUB }}
-          repo: openebs/${{ matrix.repo }}
-          ref: ${{ matrix.branch }}
-          workflow: nightly-ci.yml
-          wait-for-completion: true
-          wait-for-completion-timeout: 4h
-          display-workflow-run-url-timeout: 1h
+      - uses: actions/checkout@v4
+      - name: Setup
+        id: start
+        run: |
+          start_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "Started at $start_time"
+          #echo "START_TIME=$start_time" >> $GITHUB_OUTPUT
+          echo "START_TIME=2025-06-20T16:55:57Z" >> $GITHUB_OUTPUT
+      # - name: Dispatch
+      #   id: dispatch
+      #   uses: the-actions-org/workflow-dispatch@v4
+      #   with:
+      #     token: ${{ secrets.ORG_CI_GITHUB }}
+      #     repo: openebs/${{ matrix.repo }}
+      #     ref: ${{ matrix.branch }}
+      #     workflow: nightly-ci.yml
+      #     wait-for-completion: false
+      #     display-workflow-run-url-timeout: 1h
+      #     display-workflow-run-url-interval: 15s
+      #     display-workflow-run-url: true
+      # - run: |
+      #     echo "Dispatched workflow ${{ steps.dispatch.outputs.workflow-id }} for ${{ matrix.repo }}@${{ matrix.branch }}"
+      - name: Find workflow
+        id: find
+        env:
+          GITHUB_TOKEN: ${{ secrets.ORG_CI_GITHUB }}
+          WORKFLOW_ID: nightly-ci.yml
+          MAX_FIND_MINUTES: 3
+          INTERVAL_SECS: 15
+          ORG_NAME: openebs
+          REPO_NAME: ${{ matrix.repo }}
+          REF: ${{ matrix.branch }}
+          START_TIME: ${{ steps.start.outputs.START_TIME }}
+          WAIT: false
+        run: ./wait-for-workflow.sh
+      - name: Await
+        id: await
+        env:
+          GITHUB_TOKEN: ${{ secrets.ORG_CI_GITHUB }}
+          WORKFLOW_ID: nightly-ci.yml
+          INTERVAL_SECS: 60
+          TIMEOUT_MINUTES: 360
+          ORG_NAME: openebs
+          REPO_NAME: ${{ matrix.repo }}
+          REF: ${{ matrix.branch }}
+          RUN_ID: ${{ steps.find.outputs.workflow-id }}
+        run: ./wait-for-workflow.sh
       - name: Print Status
         if: always()
         run: |
-          echo "Workflow for repo ${{ matrix.repo }} and branch ${{ matrix.branch }} completed with status: ${{ steps.dispatch.outputs.workflow-conclusion }}"
-          echo "For more details, see ${{ steps.dispatch.outputs.workflow-url }}"
+          echo "Workflow for ${{ matrix.repo }}@${{ matrix.branch }} completed with status: ${{ steps.await.outputs.workflow-conclusion }}"
+          echo "For more details, see ${{ steps.find.outputs.workflow-url }}"
+      - name: Cancel
+        if: cancelled()
+        run: |
+          curl -s -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: token ${{ secrets.ORG_CI_GITHUB }}" \
+            ${{ steps.find.outputs.workflow-api-url }}/cancel
   nightly-ci:
     name: Collect All Runs
     needs: nightly-ci-matrix
@@ -44,4 +91,3 @@ jobs:
       - name: Workflow Complete
         if: always()
         run: echo "All matrix jobs have completed!"
-
