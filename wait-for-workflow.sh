@@ -21,16 +21,17 @@ counter=0
 
 # Get the current time in ISO 8601 format
 current_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-start_time=${START_TIME:-$current_time}
+yesterday=$(date -u -d "yesterday" +"%Y-%m-%dT%H:%M:%SZ")
+start_time=${START_TIME:-$yesterday}
 
 # Check if REF has the prefix "refs/heads/" and append it if not
 if [[ ! "$REF" =~ ^refs/heads/ ]]; then
   REF="refs/heads/$REF"
 fi
 
-GITHUB_AUTH=
+HEADERS=(-H "Accept: application/vnd.github+json")
 if [ -n "${GITHUB_TOKEN:-}" ]; then
-  GITHUB_AUTH="-H \"Authorization: token $GITHUB_TOKEN\""
+  HEADERS+=(-H "Authorization: token $GITHUB_TOKEN")
 fi
 
 echo "ℹ️ Organization: ${ORG_NAME}"
@@ -39,6 +40,9 @@ echo "ℹ️ Reference: $REF"
 echo "ℹ️ Timeout to find the workflow: ${max_find_minutes} minutes"
 echo "ℹ️ Timeout for the workflow to complete: ${timeout} minutes"
 echo "ℹ️ Interval between checks: ${interval} seconds"
+
+echo "ℹ️ Worflow Start Time: $start_time"
+echo "ℹ️ Current Time: $current_time"
 
 # If RUN_ID is not empty, use it directly
 if [ -n "${RUN_ID:-}" ]; then
@@ -51,7 +55,7 @@ else
   # Wait for the workflow to be triggered
   while true; do
     echo "⏳ Waiting for the workflow to be found..."
-    response=$(curl -s -H "Accept: application/vnd.github+json" $GITHUB_AUTH \
+    response=$(curl -s "${HEADERS[@]}" \
       "https://api.github.com/repos/${ORG_NAME}/${REPO_NAME}/actions/workflows/${workflow_id}/runs")
     if echo "$response" | grep -q "API rate limit exceeded"; then
       echo "❌ API rate limit exceeded. Please try again later."
@@ -95,7 +99,7 @@ fi
 timeout_counter=0
 while true; do
   echo "⌛ Waiting for the workflow to complete..."
-  run_data=$(curl -s -H "Accept: application/vnd.github+json" $GITHUB_AUTH \
+  run_data=$(curl -s "${HEADERS[@]}" \
     "https://api.github.com/repos/${ORG_NAME}/${REPO_NAME}/actions/runs/$run_id")
   status=$(echo "$run_data" | jq -r '.status')
 
