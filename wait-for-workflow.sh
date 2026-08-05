@@ -109,7 +109,7 @@ while true; do
       echo "workflow-conclusion=$conclusion" >> "$GITHUB_OUTPUT"
     fi
     if [ "$conclusion" != "success" ]; then
-      echo "❌ The workflow has not completed successfully. Exiting."
+      echo "❌ The workflow $WORKFLOW_URL has not completed successfully. Exiting."
       exit 1
     else
       echo "✅ The workflow completed successfully! Exiting."
@@ -120,7 +120,7 @@ while true; do
   # Increment the timeout counter and check if the timeout has been reached
   timeout_counter=$((timeout_counter + 1))
   if [ $((timeout_counter * interval)) -ge $((timeout * 60)) ]; then
-    echo "❌ Timeout waiting for the workflow to complete. Exiting."
+    echo "❌ Timeout waiting for the workflow $WORKFLOW_URL to complete. Exiting."
     exit 1
   fi
 
