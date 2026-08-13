@@ -1,0 +1,74 @@
+name: Dispatch and Await Nightly CI
+description: Dispatch a nightly workflow and await its completion.
+
+inputs:
+  token:
+    required: true
+  repo:
+    required: true
+  branch:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Setup
+      id: start
+      shell: bash
+      run: |
+        start_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        echo "Started at $start_time"
+        echo "START_TIME=$start_time" >> $GITHUB_OUTPUT
+    - name: Dispatch
+      id: dispatch
+      uses: benc-uk/workflow-dispatch@v1
+      with:
+        token: ${{ inputs.token }}
+        repo: openebs/${{ inputs.repo }}
+        ref: ${{ inputs.branch }}
+        workflow: nightly-ci.yml
+        wait-for-completion: false
+    - shell: bash
+      run: |
+        echo "Dispatched workflow ${{ steps.dispatch.outputs.workflow-id }} for ${{ inputs.repo }}@${{ inputs.branch }}"
+    - name: Find workflow
+      id: find
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        WORKFLOW_ID: nightly-ci.yml
+        MAX_FIND_MINUTES: 3
+        INTERVAL_SECS: 15
+        ORG_NAME: openebs
+        REPO_NAME: ${{ inputs.repo }}
+        REF: ${{ inputs.branch }}
+        START_TIME: ${{ steps.start.outputs.START_TIME }}
+        WAIT: false
+      run: ${{ github.action_path }}/../../../wait-for-workflow.sh
+    - name: Await
+      id: await
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        WORKFLOW_ID: nightly-ci.yml
+        INTERVAL_SECS: 60
+        TIMEOUT_MINUTES: 360
+        ORG_NAME: openebs
+        REPO_NAME: ${{ inputs.repo }}
+        REF: ${{ inputs.branch }}
+        RUN_ID: ${{ steps.find.outputs.workflow-id }}
+      run: ${{ github.action_path }}/../../../wait-for-workflow.sh
+    - name: Print Status
+      if: always()
+      shell: bash
+      run: |
+        echo "Workflow for ${{ inputs.repo }}@${{ inputs.branch }} completed with status: ${{ steps.await.outputs.workflow-conclusion }}"
+        echo "For more details, see ${{ steps.find.outputs.workflow-url }}"
+    - name: Cancel
+      if: cancelled()
+      shell: bash
+      run: |
+        curl -s -X POST \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: token ${{ inputs.token }}" \
+          ${{ steps.find.outputs.workflow-api-url }}/cancel
