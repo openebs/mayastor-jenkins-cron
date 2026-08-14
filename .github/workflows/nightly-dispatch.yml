@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        branch: [develop, release/4.5]
+        branch: [develop]
       fail-fast: false
     steps:
       - uses: actions/checkout@v7
@@ -59,7 +59,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        branch: [develop, release/1.9]
+        branch: [develop]
       fail-fast: false
     steps:
       - uses: actions/checkout@v7
@@ -74,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        branch: [develop, release/2.10]
+        branch: [develop]
       fail-fast: false
     steps:
       - uses: actions/checkout@v7
