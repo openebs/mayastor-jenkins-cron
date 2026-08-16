@@ -97,10 +97,11 @@ fi
 
 # Wait for the triggered workflow to complete and check its conclusion
 timeout_counter=0
+workflow_sub="$ORG_NAME/$REPO_NAME/actions/runs/$run_id"
+workflow_url="https://github.com/$workflow_sub"
 while true; do
   echo "⌛ Waiting for the workflow to complete..."
-  run_data=$(curl -s "${HEADERS[@]}" \
-    "https://api.github.com/repos/${ORG_NAME}/${REPO_NAME}/actions/runs/$run_id")
+  run_data=$(curl -s "${HEADERS[@]}" "https://api.github.com/repos/$workflow_sub")
   status=$(echo "$run_data" | jq -r '.status')
 
   if [ "$status" = "completed" ]; then
@@ -109,7 +110,7 @@ while true; do
       echo "workflow-conclusion=$conclusion" >> "$GITHUB_OUTPUT"
     fi
     if [ "$conclusion" != "success" ]; then
-      echo "❌ The workflow $WORKFLOW_URL has not completed successfully. Exiting."
+      echo "❌ The workflow $workflow_url has not completed successfully. Exiting."
       exit 1
     else
       echo "✅ The workflow completed successfully! Exiting."
@@ -120,7 +121,7 @@ while true; do
   # Increment the timeout counter and check if the timeout has been reached
   timeout_counter=$((timeout_counter + 1))
   if [ $((timeout_counter * interval)) -ge $((timeout * 60)) ]; then
-    echo "❌ Timeout waiting for the workflow $WORKFLOW_URL to complete. Exiting."
+    echo "❌ Timeout waiting for the workflow $workflow_url to complete. Exiting."
     exit 1
   fi
 
