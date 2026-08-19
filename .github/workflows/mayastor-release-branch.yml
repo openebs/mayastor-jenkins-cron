@@ -7,27 +7,150 @@ on:
         description: "Branch to create off develop (e.g. release/2.12)"
         required: true
         type: string
+      retry:
+        description: "Allow re-running when all release branches already exist"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
-  mayastor:
-    name: ${{ matrix.repo }} (${{ inputs.branch-name }})
+  validate:
+    name: validate (${{ inputs.branch-name }})
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        repo: [spdk-rs, mayastor-dependencies, mayastor, mayastor-control-plane, mayastor-extensions]
-      fail-fast: false
-    env:
-      GH_TOKEN: ${{ secrets.ORG_CI_GITHUB }}
     steps:
-      - run: |
+      - name: Check branch name
+        run: |
           case "${{ inputs.branch-name }}" in
             release/*) ;;
             *) echo "::error::Branch name must start with 'release/'"; exit 1 ;;
           esac
-          if gh api "repos/openebs/${{ matrix.repo }}/git/ref/heads/${{ inputs.branch-name }}" >/dev/null 2>&1; then
-            echo "Branch ${{ inputs.branch-name }} already exists in openebs/${{ matrix.repo }}, skipping"
+      - name: Check branches do not already exist
+        if: ${{ !inputs.retry }}
+        env:
+          GH_TOKEN: ${{ secrets.ORG_CI_GITHUB }}
+          BRANCH: ${{ inputs.branch-name }}
+        run: |
+          set -euo pipefail
+          repos="spdk-rs mayastor-dependencies mayastor mayastor-control-plane mayastor-extensions"
+          all_exist=true
+          for repo in $repos; do
+            if ! git ls-remote --exit-code --heads \
+              "https://x-access-token:${GH_TOKEN}@github.com/openebs/${repo}.git" "$BRANCH" >/dev/null 2>&1; then
+              all_exist=false
+            fi
+          done
+          if [ "$all_exist" = true ]; then
+            echo "::error::Branch ${BRANCH} already exists in all repos (enable retry to re-run)"
+            exit 1
+          fi
+
+  base:
+    name: ${{ matrix.repo }}
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        repo: [spdk-rs, mayastor-dependencies]
+      fail-fast: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/create-release-branch
+        with:
+          token: ${{ secrets.ORG_CI_GITHUB }}
+          repo: ${{ matrix.repo }}
+          branch-name: ${{ inputs.branch-name }}
+
+  mayastor:
+    name: mayastor
+    needs: base
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/create-release-branch
+        with:
+          token: ${{ secrets.ORG_CI_GITHUB }}
+          repo: mayastor
+          branch-name: ${{ inputs.branch-name }}
+          await-image: true
+          prepare: |
+            ./scripts/set-submodule-branches.sh --branch "$BRANCH"
+
+  controller:
+    name: mayastor-controller
+    needs: mayastor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/create-release-branch
+        with:
+          token: ${{ secrets.ORG_CI_GITHUB }}
+          repo: mayastor-control-plane
+          branch-name: ${{ inputs.branch-name }}
+          await-image: true
+          prepare: |
+            ./scripts/git/set-submodule-branches.sh --branch "$BRANCH"
+            ./scripts/rust/branch_ancestor.sh
+
+  extensions:
+    name: mayastor-extensions
+    needs: controller
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: openebs/mayastor-extensions
+          ref: develop
+          submodules: recursive
+          fetch-depth: 0
+          token: ${{ secrets.ORG_CI_GITHUB }}
+      - uses: actions/checkout@v7
+        with:
+          path: jenkins-cron
+      - uses: ./.github/actions/setup-nix
+        with:
+          preFetchNix: ./scripts/helm/shell.nix
+      - name: Create release branch
+        id: branch
+        env:
+          BRANCH: ${{ inputs.branch-name }}
+        run: |
+          set -euo pipefail
+
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "Branch ${BRANCH} already exists in openebs/mayastor-extensions, skipping creation"
+            # Use the existing branch tip commit time/sha so the earlier image run can still be found.
+            git fetch --quiet origin "$BRANCH"
+            echo "start-time=$(git log -1 --format=%cI FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+            echo "head-sha=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          gh api "repos/openebs/${{ matrix.repo }}/git/refs" \
-            -f ref="refs/heads/${{ inputs.branch-name }}" \
-            -f sha="$(gh api "repos/openebs/${{ matrix.repo }}/git/ref/heads/develop" --jq .object.sha)"
+
+          echo "start-time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
+
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+
+          nix-shell --pure --run "./scripts/helm/publish-chart-yaml.sh --check-chart \"$BRANCH\" --develop-to-release" ./scripts/helm/shell.nix
+          ./scripts/git/set-submodule-branches.sh --branch "$BRANCH"
+          nix-shell ./scripts/helm/shell.nix --pure --run "SKIP_GIT=1 ./scripts/helm/generate-readme.sh"
+          nix-shell ./scripts/helm/shell.nix --pure --run "./scripts/helm/images.sh generate --dependency-update"
+          nix-shell ./scripts/helm/shell.nix --pure --run "./scripts/helm/images.sh patch"
+
+          git add -A
+          git commit --allow-empty -m "chore: prepare ${BRANCH}"
+          git push origin "$BRANCH"
+          echo "head-sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Await image build
+        env:
+          GITHUB_TOKEN: ${{ secrets.ORG_CI_GITHUB }}
+          WORKFLOW_ID: image.yml
+          ORG_NAME: openebs
+          REPO_NAME: mayastor-extensions
+          REF: ${{ inputs.branch-name }}
+          START_TIME: ${{ steps.branch.outputs.start-time }}
+          HEAD_SHA: ${{ steps.branch.outputs.head-sha }}
+          MAX_FIND_MINUTES: 10
+          INTERVAL_SECS: 60
+          TIMEOUT_MINUTES: 360
+        run: ${{ github.workspace }}/jenkins-cron/wait-for-workflow.sh

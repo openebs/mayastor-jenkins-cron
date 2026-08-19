@@ -65,8 +65,8 @@ else
       exit 1
     fi
     run_id=$(echo "$response" | \
-      jq -r --arg ref "$(echo "$REF" | sed 's/refs\/heads\///')" --arg current_time "$current_time" --arg start_time "$start_time" \
-      '.workflow_runs[] | select(.head_branch == $ref and .created_at >= $start_time and .created_at <= $current_time) | .id')
+      jq -r --arg ref "$(echo "$REF" | sed 's/refs\/heads\///')" --arg current_time "$current_time" --arg start_time "$start_time" --arg head_sha "${HEAD_SHA:-}" \
+      '[.workflow_runs[] | select(.head_branch == $ref and .created_at >= $start_time and .created_at <= $current_time and ($head_sha == "" or .head_sha == $head_sha))] | sort_by(.created_at) | last | .id // empty')
     if [ -n "$run_id" ]; then
       WORKFLOW_SUB="$ORG_NAME/$REPO_NAME/actions/runs/$run_id"
       WORKFLOW_URL="https://github.com/$WORKFLOW_SUB"

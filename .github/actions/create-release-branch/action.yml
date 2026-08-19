@@ -1,0 +1,79 @@
+name: Create Release Branch
+description: Create a release/* branch off develop, preparing its content via the repo's own scripts.
+
+inputs:
+  token:
+    required: true
+  repo:
+    required: true
+  branch-name:
+    required: true
+  prepare:
+    description: "Bash snippet run inside the cloned repo to prepare release content. Empty => empty commit."
+    required: false
+    default: ""
+  await-image:
+    description: "Wait for the release branch's image.yml (Image Push) workflow to succeed after pushing."
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v7
+      with:
+        repository: openebs/${{ inputs.repo }}
+        ref: develop
+        submodules: recursive
+        fetch-depth: 0
+        token: ${{ inputs.token }}
+        path: release-repo
+    - id: branch
+      shell: bash
+      working-directory: release-repo
+      env:
+        BRANCH: ${{ inputs.branch-name }}
+        PREPARE: ${{ inputs.prepare }}
+      run: |
+        set -euo pipefail
+
+        if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+          echo "Branch ${BRANCH} already exists in openebs/${{ inputs.repo }}, skipping creation"
+          # Use the existing branch tip commit time/sha so the earlier image run can still be found.
+          git fetch --quiet origin "$BRANCH"
+          echo "start-time=$(git log -1 --format=%cI FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+          echo "head-sha=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        echo "start-time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
+
+        git config user.name "${{ github.actor }}"
+        git config user.email "${{ github.actor }}@users.noreply.github.com"
+        git checkout -b "$BRANCH"
+        export BRANCH
+
+        if [ -n "$PREPARE" ]; then
+          bash -euo pipefail -c "$PREPARE"
+          git --no-pager diff --color=always
+        fi
+
+        git add -A
+        git commit --allow-empty -m "chore: prepare ${BRANCH}"
+        git push origin "$BRANCH"
+        echo "head-sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+    - name: Await image build
+      if: inputs.await-image == 'true'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        WORKFLOW_ID: image.yml
+        ORG_NAME: openebs
+        REPO_NAME: ${{ inputs.repo }}
+        REF: ${{ inputs.branch-name }}
+        START_TIME: ${{ steps.branch.outputs.start-time }}
+        HEAD_SHA: ${{ steps.branch.outputs.head-sha }}
+        MAX_FIND_MINUTES: 10
+        INTERVAL_SECS: 60
+        TIMEOUT_MINUTES: 360
+      run: ${{ github.action_path }}/../../../wait-for-workflow.sh
