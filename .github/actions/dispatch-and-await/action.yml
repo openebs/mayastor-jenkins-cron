@@ -1,5 +1,5 @@
-name: Dispatch and Await Nightly CI
-description: Dispatch a nightly workflow and await its completion.
+name: Dispatch and Await
+description: Dispatch a workflow and await its completion.
 
 inputs:
   token:
@@ -8,6 +8,18 @@ inputs:
     required: true
   branch:
     required: true
+  workflow:
+    description: "Workflow file to dispatch and await."
+    required: false
+    default: nightly-ci.yml
+  dispatch-inputs:
+    description: "JSON object of inputs passed to the dispatched workflow."
+    required: false
+    default: ""
+  retry:
+    description: "Await an already-dispatched run instead of dispatching a new one."
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -16,17 +28,24 @@ runs:
       id: start
       shell: bash
       run: |
-        start_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-        echo "Started at $start_time"
-        echo "START_TIME=$start_time" >> $GITHUB_OUTPUT
+        if [ "${{ inputs.retry }}" = "true" ]; then
+          # Look back so a previously dispatched run can still be found.
+          echo "START_TIME=" >> $GITHUB_OUTPUT
+        else
+          start_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "Started at $start_time"
+          echo "START_TIME=$start_time" >> $GITHUB_OUTPUT
+        fi
     - name: Dispatch
       id: dispatch
+      if: inputs.retry != 'true'
       uses: benc-uk/workflow-dispatch@v1
       with:
         token: ${{ inputs.token }}
         repo: openebs/${{ inputs.repo }}
         ref: ${{ inputs.branch }}
-        workflow: nightly-ci.yml
+        workflow: ${{ inputs.workflow }}
+        inputs: ${{ inputs.dispatch-inputs }}
         wait-for-completion: false
     - shell: bash
       run: |
@@ -36,7 +55,7 @@ runs:
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.token }}
-        WORKFLOW_ID: nightly-ci.yml
+        WORKFLOW_ID: ${{ inputs.workflow }}
         MAX_FIND_MINUTES: 3
         INTERVAL_SECS: 15
         ORG_NAME: openebs
@@ -50,7 +69,7 @@ runs:
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.token }}
-        WORKFLOW_ID: nightly-ci.yml
+        WORKFLOW_ID: ${{ inputs.workflow }}
         INTERVAL_SECS: 60
         TIMEOUT_MINUTES: 360
         ORG_NAME: openebs

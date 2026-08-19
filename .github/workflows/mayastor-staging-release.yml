@@ -1,0 +1,53 @@
+name: Create Mayastor Staging Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to be released (e.g. v2.12.0)"
+        required: true
+        type: string
+      retry:
+        description: "Await an already-dispatched staging run instead of dispatching a new one"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  validate:
+    name: validate (${{ inputs.tag }})
+    runs-on: ubuntu-latest
+    outputs:
+      branch: ${{ steps.branch.outputs.branch }}
+    steps:
+      - name: Resolve branch from tag
+        id: branch
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [[ ! "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Tag ${TAG} must look like vX.Y.Z or vX.Y.Z-<pre> (e.g. v2.12.0, v2.12.0-rc.0)"
+            exit 1
+          fi
+          branch="release/${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          echo "Resolved branch ${branch} from tag ${TAG}"
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+
+  staging:
+    name: ${{ matrix.repo }} (${{ inputs.tag }})
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        repo: [mayastor, mayastor-control-plane, mayastor-extensions]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/dispatch-and-await
+        with:
+          token: ${{ secrets.ORG_CI_GITHUB }}
+          repo: ${{ matrix.repo }}
+          branch: ${{ needs.validate.outputs.branch }}
+          workflow: staging.yml
+          dispatch-inputs: '{ "tag": "${{ inputs.tag }}" }'
+          retry: ${{ inputs.retry }}
