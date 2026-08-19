@@ -1,0 +1,33 @@
+name: Create Mayastor Release Branch
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch-name:
+        description: "Branch to create off develop (e.g. release/2.12)"
+        required: true
+        type: string
+
+jobs:
+  mayastor:
+    name: ${{ matrix.repo }} (${{ inputs.branch-name }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        repo: [spdk-rs, mayastor-dependencies, mayastor, mayastor-control-plane, mayastor-extensions]
+      fail-fast: false
+    env:
+      GH_TOKEN: ${{ secrets.ORG_CI_GITHUB }}
+    steps:
+      - run: |
+          case "${{ inputs.branch-name }}" in
+            release/*) ;;
+            *) echo "::error::Branch name must start with 'release/'"; exit 1 ;;
+          esac
+          if gh api "repos/openebs/${{ matrix.repo }}/git/ref/heads/${{ inputs.branch-name }}" >/dev/null 2>&1; then
+            echo "Branch ${{ inputs.branch-name }} already exists in openebs/${{ matrix.repo }}, skipping"
+            exit 0
+          fi
+          gh api "repos/openebs/${{ matrix.repo }}/git/refs" \
+            -f ref="refs/heads/${{ inputs.branch-name }}" \
+            -f sha="$(gh api "repos/openebs/${{ matrix.repo }}/git/ref/heads/develop" --jq .object.sha)"
