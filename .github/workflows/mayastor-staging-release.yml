@@ -1,4 +1,4 @@
-name: Create Mayastor Staging Release
+name: Mayastor Staging Release
 
 on:
   workflow_dispatch:
@@ -34,7 +34,7 @@ jobs:
           echo "branch=${branch}" >> "$GITHUB_OUTPUT"
 
   staging:
-    name: ${{ matrix.repo }} (${{ inputs.tag }})
+    name: ${{ matrix.repo }}
     needs: validate
     runs-on: ubuntu-latest
     strategy:
@@ -51,3 +51,28 @@ jobs:
           workflow: staging.yml
           dispatch-inputs: '{ "tag": "${{ inputs.tag }}" }'
           retry: ${{ inputs.retry }}
+
+  report:
+    name: report
+    needs: staging
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Report pushed artifacts
+        uses: ./.github/actions/staging-report
+        with:
+          tag: ${{ inputs.tag }}
+
+  chart:
+    name: chart metadata
+    needs: staging
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Dump chart metadata
+        uses: ./.github/actions/staging-report
+        with:
+          tag: ${{ inputs.tag }}
+          chart-only: "true"

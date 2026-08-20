@@ -1,0 +1,27 @@
+name: Staging Report
+description: Summarise the mayastor images, helm chart and kubectl plugin pushed by the extensions staging release, from the chart metadata.
+
+inputs:
+  tag:
+    required: true
+  chart-only:
+    description: Dump the Chart.yaml only (helm show chart) instead of the full artifact report.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: imjasonh/setup-crane@v0.4
+    - shell: bash
+      run: |
+        if [ "${{ inputs.chart-only }}" = "true" ]; then
+          {
+            echo "## Helm chart metadata \`${{ inputs.tag }}\`"
+            echo '```yaml'
+            ${{ github.action_path }}/../../../staging-report.sh "${{ inputs.tag }}" --chart
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        else
+          ${{ github.action_path }}/../../../staging-report.sh "${{ inputs.tag }}" --uncompressed
+        fi
