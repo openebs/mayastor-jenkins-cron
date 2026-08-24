@@ -12,12 +12,18 @@ on:
         required: false
         default: false
         type: boolean
+      allow-stale-control-plane:
+        description: "Allow mayastor-extensions to pin a control-plane commit older than control-plane develop tip"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   validate:
     name: validate (${{ inputs.branch-name }})
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
       - name: Check branch name
         run: |
           case "${{ inputs.branch-name }}" in
@@ -43,6 +49,19 @@ jobs:
             echo "::error::Branch ${BRANCH} already exists in all repos (enable retry to re-run)"
             exit 1
           fi
+      - name: Check extensions tracks control-plane develop tip
+        if: ${{ !inputs.allow-stale-control-plane }}
+        env:
+          GH_TOKEN: ${{ secrets.ORG_CI_GITHUB }}
+        run: |
+          # mayastor-extensions vendors mayastor-control-plane as a submodule.
+          # Its develop must pin the control-plane develop tip, otherwise cutting
+          # the control-plane release from develop would advance extensions past
+          # the commit it was integrated/tested against. Re-run with
+          # allow-stale-control-plane=true to intentionally release an older pin.
+          ./check-submodule-tip.sh \
+            --parent openebs/mayastor-extensions \
+            --submodule openebs/mayastor-control-plane
 
   base:
     name: ${{ matrix.repo }}
@@ -50,7 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        repo: [spdk-rs, mayastor-dependencies]
+        repo: [spdk-rs]
       fail-fast: true
     steps:
       - uses: actions/checkout@v7
@@ -60,9 +79,31 @@ jobs:
           repo: ${{ matrix.repo }}
           branch-name: ${{ inputs.branch-name }}
 
+  dependencies:
+    name: mayastor-dependencies
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # mayastor-dependencies is a submodule of both mayastor and mayastor-control-plane.
+      # Branch the release from whichever parent's develop  pins the most recent dependencies 
+      # commit, rather than from the dependencies develop tip (which may be ahead of both).
+      - id: base
+        env:
+          GH_TOKEN: ${{ secrets.ORG_CI_GITHUB }}
+        run: |
+          ./latest-submodule-commit.sh --submodule openebs/mayastor-dependencies \
+            --parents "openebs/mayastor openebs/mayastor-control-plane"
+      - uses: ./.github/actions/create-release-branch
+        with:
+          token: ${{ secrets.ORG_CI_GITHUB }}
+          repo: mayastor-dependencies
+          branch-name: ${{ inputs.branch-name }}
+          ref: ${{ steps.base.outputs.sha }}
+
   mayastor:
     name: mayastor
-    needs: base
+    needs: [base, dependencies]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

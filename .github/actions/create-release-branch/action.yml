@@ -1,5 +1,5 @@
 name: Create Release Branch
-description: Create a release/* branch off develop, preparing its content via the repo's own scripts.
+description: Create a release/* branch off a base ref (default develop), preparing its content via the repo's own scripts.
 
 inputs:
   token:
@@ -8,6 +8,10 @@ inputs:
     required: true
   branch-name:
     required: true
+  ref:
+    description: "Base ref (branch, tag or commit SHA) to create the release branch from."
+    required: false
+    default: develop
   prepare:
     description: "Bash snippet run inside the cloned repo to prepare release content. Empty => empty commit."
     required: false
@@ -23,7 +27,7 @@ runs:
     - uses: actions/checkout@v7
       with:
         repository: openebs/${{ inputs.repo }}
-        ref: develop
+        ref: ${{ inputs.ref }}
         submodules: recursive
         fetch-depth: 0
         token: ${{ inputs.token }}
