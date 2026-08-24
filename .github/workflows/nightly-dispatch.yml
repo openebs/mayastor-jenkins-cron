@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        branch: [develop, release/2.11]
+        branch: [develop, release/2.12]
         repo: [mayastor, mayastor-control-plane, mayastor-extensions]
       fail-fast: false
     steps:
@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        branch: [develop]
+        branch: [develop, release/4.6]
       fail-fast: false
     steps:
       - uses: actions/checkout@v7
@@ -59,7 +59,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        branch: [develop]
+        branch: [develop, release/1.10]
       fail-fast: false
     steps:
       - uses: actions/checkout@v7
@@ -74,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        branch: [develop]
+        branch: [develop, release/2.11]
       fail-fast: false
     steps:
       - uses: actions/checkout@v7
