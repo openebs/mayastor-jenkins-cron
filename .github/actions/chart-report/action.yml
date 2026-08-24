@@ -1,0 +1,38 @@
+name: Chart Report
+description: Summarise the mayastor images, helm chart and kubectl plugin published by a chart release (staging or released), from the chart metadata.
+
+inputs:
+  tag:
+    required: true
+  chart-only:
+    description: Dump the Chart.yaml only (helm show chart) instead of the full artifact report.
+    required: false
+    default: "false"
+  released:
+    description: Report against a published chart from the Helm HTTP repo instead of the staging OCI chart.
+    required: false
+    default: "false"
+  chart-repo:
+    description: Helm HTTP repo to read the released chart from (implies released).
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: imjasonh/setup-crane@v0.4
+    - shell: bash
+      run: |
+        args=()
+        [ "${{ inputs.released }}" = "true" ] && args+=(--released)
+        [ -n "${{ inputs.chart-repo }}" ] && args+=(--chart-repo "${{ inputs.chart-repo }}")
+        if [ "${{ inputs.chart-only }}" = "true" ]; then
+          {
+            echo "## Helm chart metadata \`${{ inputs.tag }}\`"
+            echo '```yaml'
+            ${{ github.action_path }}/../../../chart-report.sh "${{ inputs.tag }}" --chart "${args[@]}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        else
+          ${{ github.action_path }}/../../../chart-report.sh "${{ inputs.tag }}" --uncompressed "${args[@]}"
+        fi

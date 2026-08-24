@@ -1,0 +1,40 @@
+name: Mayastor Release Report
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Released version to report (e.g. v2.12.0)"
+        required: true
+        type: string
+      chart-repo:
+        description: "Helm HTTP repo to read the released chart from"
+        required: false
+        default: "https://openebs.github.io/mayastor-extensions"
+        type: string
+
+jobs:
+  report:
+    name: report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Report released artifacts
+        uses: ./.github/actions/chart-report
+        with:
+          tag: ${{ inputs.tag }}
+          released: "true"
+          chart-repo: ${{ inputs.chart-repo }}
+
+  chart:
+    name: chart metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Dump chart metadata
+        uses: ./.github/actions/chart-report
+        with:
+          tag: ${{ inputs.tag }}
+          released: "true"
+          chart-repo: ${{ inputs.chart-repo }}
+          chart-only: "true"

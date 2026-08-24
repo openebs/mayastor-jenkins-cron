@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
 
-# Summarise the mayastor images, helm chart and kubectl plugin pushed by an
-# extensions staging release, from the published chart metadata.
+# Summarise the mayastor images, helm chart and kubectl plugin published by a
+# mayastor chart, from the published chart metadata.
 #
-# Usage: staging-report.sh --tag <tag> [--quick] [--quick-img] [--quick-bins]
-#        staging-report.sh --tag <tag> --chart    # dump Chart.yaml (helm show chart)
-#        staging-report.sh <tag>                  # positional tag still accepted
+# By default the chart metadata is read from the staging OCI chart on ghcr.io.
+# Pass --released (optionally --chart-repo <url>) to instead report against a
+# published chart from the Helm HTTP repo (via `helm show chart`).
 #
-# Requires: crane, jq. Reads public ghcr.io packages (no auth needed).
-# Writes markdown to $GITHUB_STEP_SUMMARY when set, otherwise to stdout so it
-# can be run and inspected locally.
+# Usage: chart-report.sh --tag <tag> [--quick] [--quick-img] [--quick-bins]
+#        chart-report.sh --tag <tag> --released    # report a released chart
+#        chart-report.sh --tag <tag> --chart       # dump Chart.yaml (helm show chart)
+#        chart-report.sh <tag>                     # positional tag still accepted
+#
+# Requires: crane, jq (and helm, yq for --released). Reads public ghcr.io
+# packages and the public Helm repo (no auth needed). Writes markdown to
+# $GITHUB_STEP_SUMMARY when set, otherwise to stdout so it can be run and
+# inspected locally.
 
 set -euo pipefail
 
 usage() {
-  echo "usage: $(basename "$0") --tag <tag> [--quick] [--quick-img] [--quick-bins] [--skip-dependencies] [--uncompressed] [--chart]" >&2
+  echo "usage: $(basename "$0") --tag <tag> [--quick] [--quick-img] [--quick-bins] [--skip-dependencies] [--uncompressed] [--chart] [--released] [--chart-repo <url>]" >&2
   exit "${1:-1}"
 }
 
@@ -24,6 +30,8 @@ QUICK_BINS=""
 SKIP_DEPS=""
 UNCOMPRESSED=""
 CHART_ONLY=""
+RELEASED=""
+CHART_REPO=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --tag) shift; TAG="${1:-}" ;;
@@ -34,6 +42,9 @@ while [ "$#" -gt 0 ]; do
     --skip-dependencies) SKIP_DEPS="yes" ;;
     --uncompressed) UNCOMPRESSED="yes" ;;
     --chart) CHART_ONLY="yes" ;;
+    --released) RELEASED="yes" ;;
+    --chart-repo) shift; RELEASED="yes"; CHART_REPO="${1:-}" ;;
+    --chart-repo=*) RELEASED="yes"; CHART_REPO="${1#*=}" ;;
     -h|--help) usage 0 ;;
     -*) echo "error: unknown option '$1'" >&2; usage ;;
     *) TAG="$1" ;;  # positional tag
@@ -83,10 +94,18 @@ ensure_bin crane go-containerregistry
 ensure_bin jq jq
 ensure_bin curl curl
 
+# Released mode reads the published chart from a Helm HTTP repo instead of the
+# staging OCI chart; that needs helm (metadata) and yq (YAML -> JSON).
+CHART_REPO="${CHART_REPO:-https://openebs.github.io/mayastor-extensions}"
+if [ -n "$RELEASED" ]; then
+  ensure_bin helm kubernetes-helm
+  ensure_bin yq yq-go
+fi
+
 REG="ghcr.io/openebs/mayastor/dev"
 CHART_VERSION="${TAG#v}"
 CHART_REF="$REG/helm/mayastor:$CHART_VERSION"
-PLUGIN_REF="$REG/plugin/kubectl-mayastor:$TAG"
+PLUGIN_REF="$REG/plugin/kubectl-mayastor:v$CHART_VERSION"
 
 human() { numfmt --to=iec-i --suffix=B --format='%.1f' "${1:-0}" 2>/dev/null || echo "${1:-0}"; }
 short() { echo "$1"; }
@@ -197,26 +216,58 @@ image_uncompressed_size() {
 # ranged request, avoiding a full download. Falls back to streaming on failure.
 declare -A _TOKEN_CACHE=()
 gzip_isize() {
-  local repo="$1" digest="$2" csize="$3" host path token url b0 b1 b2 b3 size
+  local repo="$1" digest="$2" csize="$3" host path reg realm service sep token url eff trailer hex ok tmp
+  # Need at least the 4-byte trailer to range-read it.
+  if ! [ "${csize:-0}" -ge 4 ] 2>/dev/null; then
+    crane blob "${repo}@${digest}" 2>/dev/null | gunzip -c 2>/dev/null | wc -c
+    return
+  fi
   host="${repo%%/*}"; path="${repo#*/}"
-  # ghcr (and most registries) require a pull token even for public blobs.
-  # Cache it per-repo: images with many layers would otherwise fetch a token per layer.
+  # docker.io images are served by the registry-1.docker.io registry, not docker.io
+  # (which redirects unauthenticated requests to the marketing site).
+  reg="$host"; [ "$host" = "docker.io" ] && reg="registry-1.docker.io"
+  url="https://${reg}/v2/${path}/blobs/${digest}"
+
+  # OCI token flow: the registry advertises its auth server (realm) and service in
+  # the WWW-Authenticate header of a 401. Discover it (per registry the endpoint
+  # differs: ghcr uses ghcr.io/token, docker uses auth.docker.io, quay uses
+  # quay.io/v2/auth, ...) and cache the resulting pull token per repo. Registries
+  # that serve blobs anonymously (e.g. registry.k8s.io) yield no realm.
   token="${_TOKEN_CACHE[$repo]:-}"
   if [ -z "$token" ]; then
-    token=$(curl -fsSL "https://${host}/token?scope=repository:${path}:pull" 2>/dev/null \
-      | jq -r '.token // .access_token // empty' 2>/dev/null) || token=""
+    local www
+    www=$(curl -sSI "$url" 2>/dev/null | tr -d '\r' \
+      | awk 'tolower($1)=="www-authenticate:"{sub(/^[^ ]+ /,""); print}')
+    realm=$(sed -n 's/.*realm="\([^"]*\)".*/\1/p' <<<"$www")
+    service=$(sed -n 's/.*service="\([^"]*\)".*/\1/p' <<<"$www")
+    if [ -n "$realm" ]; then
+      sep="?"; case "$realm" in *\?*) sep="&" ;; esac
+      token=$(curl -fsSL "${realm}${sep}service=${service}&scope=repository:${path}:pull" 2>/dev/null \
+        | jq -r '.token // .access_token // empty' 2>/dev/null) || token=""
+    fi
     _TOKEN_CACHE[$repo]="$token"
   fi
-  url="https://${host}/v2/${path}/blobs/${digest}"
-  # Last 4 bytes little-endian = uncompressed size mod 2^32.
-  read -r b0 b1 b2 b3 < <(
-    curl -fsSL ${token:+-H "Authorization: Bearer ${token}"} \
-      -r "$((csize - 4))-$((csize - 1))" "$url" 2>/dev/null \
-      | od -An -tu1 | tr -s ' ' | sed 's/^ //'
-  ) || true
-  if [ -n "${b3:-}" ]; then
-    size=$(( b0 + b1*256 + b2*65536 + b3*16777216 ))
-    echo "$size"
+
+  # Fetch the last 4 bytes (little-endian ISIZE = uncompressed size mod 2^32).
+  # Only trust them when the server honoured the Range AND the URL we actually
+  # read from references this blob's digest: an unauthenticated/redirected
+  # request can land on an unrelated page whose 4 bytes would parse as a bogus,
+  # huge size. Anything else falls back to streaming the blob through gunzip.
+  hex="${digest#*:}"
+  tmp=$(mktemp)
+  eff=$(curl -fsSL ${token:+-H "Authorization: Bearer ${token}"} \
+    -r "$((csize - 4))-$((csize - 1))" "$url" -o "$tmp" \
+    -w '%{url_effective}' 2>/dev/null) || eff=""
+  trailer=$(od -An -tu1 "$tmp" | tr -s ' \n' ' ' | sed 's/^ //;s/ $//')
+  rm -f "$tmp"
+  ok=""
+  if [ "$(wc -w <<<"$trailer")" -eq 4 ] && [ "${#hex}" -ge 8 ]; then
+    case "$eff" in *"$hex"*) ok="yes" ;; esac
+  fi
+  if [ -n "$ok" ]; then
+    # shellcheck disable=SC2086
+    set -- $trailer
+    echo "$(( $1 + $2*256 + $3*65536 + $4*16777216 ))"
   else
     crane blob "${repo}@${digest}" 2>/dev/null | gunzip -c 2>/dev/null | wc -c
   fi
@@ -354,24 +405,48 @@ images_table() {
 
 report() {
   # Helm's OCI config blob is the Chart.yaml serialised to JSON (name, version, appVersion, annotations).
-  local cfg
-  cfg=$(crane config "$CHART_REF" 2>/dev/null) || cfg=""
+  # Released mode reads the same fields from the published chart via `helm show chart`.
+  local cfg heading
+  if [ -n "$RELEASED" ]; then
+    cfg=$(helm show chart mayastor --repo "$CHART_REPO" --version "$CHART_VERSION" 2>/dev/null \
+      | yq -o=json '.' 2>/dev/null) || cfg=""
+    heading="release"
+  else
+    cfg=$(crane config "$CHART_REF" 2>/dev/null) || cfg=""
+    heading="staging"
+  fi
 
-  echo "## mayastor staging \`${TAG}\`"
+  echo "## mayastor ${heading} \`${TAG}\`"
   echo
 
   echo "### Helm chart"
   echo
   if [ -n "$cfg" ]; then
-    local cname cver cappver csize cdig
-    cname="${CHART_REF%:*}"
+    local cname cver cappver csize cdig clink
     cver=$(jq -r '.version // empty' <<<"$cfg")
     cappver=$(jq -r '.appVersion // empty' <<<"$cfg")
-    csize=$(image_size "$CHART_REF")
-    cdig=$(crane digest "$CHART_REF" 2>/dev/null || echo "-")
+    if [ -n "$RELEASED" ]; then
+      # Size + digest of the packaged chart come from the repo index.
+      local idx="" ctgz=""
+      idx=$(curl -fsSL "$CHART_REPO/index.yaml" 2>/dev/null) || idx=""
+      if [ -n "$idx" ]; then
+        cdig=$(yq -r ".entries.mayastor[] | select(.version==\"$CHART_VERSION\") | .digest // \"-\"" <<<"$idx" 2>/dev/null)
+        ctgz=$(yq -r ".entries.mayastor[] | select(.version==\"$CHART_VERSION\") | .urls[0] // \"\"" <<<"$idx" 2>/dev/null)
+      fi
+      [ -n "$ctgz" ] && csize=$(curl -fsSLI "$ctgz" 2>/dev/null \
+        | awk 'tolower($1)=="content-length:"{print $2}' | tr -d '\r')
+      clink="[\`mayastor\`]($CHART_REPO)"
+    else
+      cname="${CHART_REF%:*}"
+      csize=$(image_size "$CHART_REF")
+      cdig=$(crane digest "$CHART_REF" 2>/dev/null || echo "-")
+      clink="$(image_link "\`$cname\`" "$CHART_REF")"
+    fi
     echo "| Chart | Version | App version | Size | Digest |"
     echo "| --- | --- | --- | --- | --- |"
-    echo "| $(image_link "\`$cname\`" "$CHART_REF") | ${cver:-$CHART_VERSION} | ${cappver:-$TAG} | $(human "$csize") | \`$(short "$cdig")\` |"
+    echo "| $clink | ${cver:-$CHART_VERSION} | ${cappver:-$TAG} | $(human "${csize:-0}") | \`$(short "${cdig:--}")\` |"
+  elif [ -n "$RELEASED" ]; then
+    echo "_Chart \`mayastor\` version \`$CHART_VERSION\` not found in \`$CHART_REPO\`._"
   else
     echo "_Chart \`$CHART_REF\` not found._"
   fi
@@ -470,11 +545,17 @@ report() {
 # --chart dumps the Chart.yaml (the OCI config blob is Chart.yaml serialised to
 # JSON) as YAML, like `helm show chart`, then exits.
 if [ -n "$CHART_ONLY" ]; then
-  cfg=$(crane config "$CHART_REF" 2>/dev/null) || {
-    echo "error: chart '$CHART_REF' not found" >&2; exit 1;
-  }
-  ensure_bin yq yq-go
-  yq -P '.' <<<"$cfg"
+  if [ -n "$RELEASED" ]; then
+    helm show chart mayastor --repo "$CHART_REPO" --version "$CHART_VERSION" 2>/dev/null || {
+      echo "error: chart 'mayastor' version '$CHART_VERSION' not found in '$CHART_REPO'" >&2; exit 1;
+    }
+  else
+    ensure_bin yq yq-go
+    cfg=$(crane config "$CHART_REF" 2>/dev/null) || {
+      echo "error: chart '$CHART_REF' not found" >&2; exit 1;
+    }
+    yq -P '.' <<<"$cfg"
+  fi
   exit 0
 fi
 
