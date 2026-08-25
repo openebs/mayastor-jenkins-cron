@@ -12,6 +12,11 @@ on:
         required: false
         default: false
         type: boolean
+      allow-stale-control-plane:
+        description: "Allow mayastor-extensions to pin a control-plane commit older than the control-plane release branch tip"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   validate:
@@ -20,6 +25,7 @@ jobs:
     outputs:
       branch: ${{ steps.branch.outputs.branch }}
     steps:
+      - uses: actions/checkout@v7
       - name: Resolve branch from tag
         id: branch
         env:
@@ -32,6 +38,20 @@ jobs:
           branch="release/${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
           echo "Resolved branch ${branch} from tag ${TAG}"
           echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+      - name: Check extensions tracks control-plane release branch tip
+        if: ${{ !inputs.allow-stale-control-plane }}
+        env:
+          GH_TOKEN: ${{ secrets.ORG_CI_GITHUB }}
+        run: |
+          # mayastor-extensions vendors mayastor-control-plane as a submodule.
+          # Its release branch must pin the control-plane release branch tip,
+          # otherwise the staging chart would reference a control-plane commit
+          # older than the one being released. Re-run with
+          # allow-stale-control-plane=true to intentionally stage an older pin.
+          ./check-submodule-tip.sh \
+            --parent openebs/mayastor-extensions \
+            --submodule openebs/mayastor-control-plane \
+            --ref "${{ steps.branch.outputs.branch }}"
 
   staging:
     name: ${{ matrix.repo }}
